@@ -1170,7 +1170,7 @@ bool StdinIsTTY() {
 
 bool StdinSupportsRawMode() {
   if (!StdinIsTTY()) return false;
-#if defined(__wasi__) || defined(__wasm32__)
+#if defined(__wasi__)
   return false;
 #else
   return true;

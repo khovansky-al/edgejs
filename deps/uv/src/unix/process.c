@@ -35,9 +35,12 @@
 #include <fcntl.h>
 #include <poll.h>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__wasm__)
 # include <spawn.h>
 # include <paths.h>
+#endif
+
+#if defined(__APPLE__)
 # include <sys/kauth.h>
 # include <sys/types.h>
 # include <sys/sysctl.h>
@@ -417,14 +420,14 @@ static void uv__process_child_init(const uv_process_options_t* options,
 }
 
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__wasm__)
 typedef struct uv__posix_spawn_fncs_tag {
   struct {
     int (*addchdir_np)(const posix_spawn_file_actions_t *, const char *);
   } file_actions;
 } uv__posix_spawn_fncs_t;
 
-
+#if defined(__APPLE__)
 static uv_once_t posix_spawn_init_once = UV_ONCE_INIT;
 static uv__posix_spawn_fncs_t posix_spawn_fncs;
 static int posix_spawn_can_use_setsid;
@@ -464,6 +467,7 @@ static void uv__spawn_init_posix_spawn(void) {
   /* Init feature detection for POSIX_SPAWN_SETSID flag */
   uv__spawn_init_can_use_setsid();
 }
+#endif
 
 
 static int uv__spawn_set_posix_spawn_attrs(
@@ -480,6 +484,10 @@ static int uv__spawn_set_posix_spawn_attrs(
     return err;
   }
 
+#if defined(__wasm__)
+  (void) posix_spawn_fncs;
+#endif
+
   if (options->flags & (UV_PROCESS_SETUID | UV_PROCESS_SETGID)) {
     /* kauth_cred_issuser currently requires exactly uid == 0 for these
      * posixspawn_attrs (set_groups_np, setuid_np, setgid_np), which deviates
@@ -489,6 +497,11 @@ static int uv__spawn_set_posix_spawn_attrs(
     goto error;
   }
 
+#if defined(__wasm__)
+  flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
+  if (options->flags & UV_PROCESS_DETACHED)
+    flags |= POSIX_SPAWN_SETSID;
+#else
   /* Set flags for spawn behavior
    * 1) POSIX_SPAWN_CLOEXEC_DEFAULT: (Apple Extension) All descriptors in the
    *    parent will be treated as if they had been created with O_CLOEXEC. The
@@ -514,6 +527,7 @@ static int uv__spawn_set_posix_spawn_attrs(
 
     flags |= POSIX_SPAWN_SETSID;
   }
+#endif
   err = posix_spawnattr_setflags(attrs, flags);
   if (err != 0)
     goto error;
@@ -555,14 +569,22 @@ static int uv__spawn_set_posix_spawn_file_actions(
     return err;
   }
 
+#if defined(__wasm__)
+  (void) posix_spawn_fncs;
+#endif
+
   /* Set the current working directory if requested */
   if (options->cwd != NULL) {
+#if defined(__wasm__)
+    err = posix_spawn_file_actions_addchdir_np(actions, options->cwd);
+#else
     if (posix_spawn_fncs->file_actions.addchdir_np == NULL) {
       err = ENOSYS;
       goto error;
     }
 
     err = posix_spawn_fncs->file_actions.addchdir_np(actions, options->cwd);
+#endif
     if (err != 0)
       goto error;
   }
@@ -618,10 +640,16 @@ static int uv__spawn_set_posix_spawn_file_actions(
       }
     }
 
-    if (fd == use_fd)
+    if (fd == use_fd) {
+#if defined(__wasm__)
+        /* POSIX adddup2(fd, fd) clears FD_CLOEXEC in the child. */
+        err = posix_spawn_file_actions_adddup2(actions, fd, fd);
+#else
         err = posix_spawn_file_actions_addinherit_np(actions, fd);
-    else
+#endif
+    } else {
         err = posix_spawn_file_actions_adddup2(actions, use_fd, fd);
+    }
     assert(err != ENOSYS);
     if (err != 0)
       goto error;
@@ -816,6 +844,7 @@ error:
 }
 #endif
 
+#if !defined(__wasm__)
 static int uv__spawn_and_init_child_fork(const uv_process_options_t* options,
                                          int stdio_count,
                                          int (*pipes)[2],
@@ -856,6 +885,7 @@ static int uv__spawn_and_init_child_fork(const uv_process_options_t* options,
   /* Fork succeeded, in the parent process */
   return 0;
 }
+#endif
 
 static int uv__spawn_and_init_child(
     uv_loop_t* loop,
@@ -863,6 +893,14 @@ static int uv__spawn_and_init_child(
     int stdio_count,
     int (*pipes)[2],
     pid_t* pid) {
+#if defined(__wasm__)
+  (void) loop;
+  return uv__spawn_and_init_child_posix_spawn(options,
+                                              stdio_count,
+                                              pipes,
+                                              pid,
+                                              NULL);
+#else
   int signal_pipe[2] = { -1, -1 };
   int status;
   int err;
@@ -960,6 +998,7 @@ static int uv__spawn_and_init_child(
   uv__close_nocheckstdio(signal_pipe[0]);
 
   return err;
+#endif
 }
 #endif /* ISN'T TARGET_OS_TV || TARGET_OS_WATCH */
 

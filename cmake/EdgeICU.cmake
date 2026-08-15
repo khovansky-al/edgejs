@@ -24,6 +24,11 @@ function(edge_configure_icu)
       UCONFIG_NO_BREAK_ITERATION=0
       U_DISABLE_RENAMING=1
     )
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^wasm")
+      # Linux/wasm intentionally has no mmap ABI; ICU's stdio loader is its
+      # supported fallback and works with the embedded common-data archive.
+      list(APPEND EDGE_ICU_BASE_DEFINES U_HAVE_MMAP=0)
+    endif()
 
     add_library(edge_icu_stubdata STATIC
       "${EDGE_ICU_ROOT}/source/stubdata/stubdata.cpp"

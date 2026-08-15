@@ -24,6 +24,10 @@ function(edge_configure_options)
     "Link against a shared/system OpenSSL instead of the vendored OpenSSL"
     OFF
   )
+  option(EDGE_STATIC_OPENSSL
+    "Link against a static/system OpenSSL instead of the vendored OpenSSL"
+    OFF
+  )
   option(EDGE_QUICKJS_WEBASSEMBLY
     "Install a QuickJS-only WebAssembly global backed by Wasmer's wasm_c_api"
     ON
@@ -103,6 +107,7 @@ function(edge_configure_options)
   set(EDGE_PREFER_REPO_LOCAL_V8 "${EDGE_PREFER_REPO_LOCAL_V8}" PARENT_SCOPE)
   set(EDGE_BUILD_NAPI_TESTS "${EDGE_BUILD_NAPI_TESTS}" PARENT_SCOPE)
   set(EDGE_SHARED_OPENSSL "${EDGE_SHARED_OPENSSL}" PARENT_SCOPE)
+  set(EDGE_STATIC_OPENSSL "${EDGE_STATIC_OPENSSL}" PARENT_SCOPE)
   set(EDGE_QUICKJS_WEBASSEMBLY "${EDGE_QUICKJS_WEBASSEMBLY}" PARENT_SCOPE)
   set(EDGE_QUICKJS_WASMER_VERSION "${EDGE_QUICKJS_WASMER_VERSION}" PARENT_SCOPE)
   set(EDGE_QUICKJS_WASMER_DIST_ROOT "${EDGE_QUICKJS_WASMER_DIST_ROOT}" PARENT_SCOPE)

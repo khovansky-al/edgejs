@@ -13,6 +13,9 @@
 #include <process.h>
 #else
 #include <errno.h>
+#if defined(__wasm__)
+#include <spawn.h>
+#endif
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -34,6 +37,97 @@ struct CommandResult {
   std::string stdout_output;
   std::string stderr_output;
 };
+
+#if defined(__wasm__)
+int SpawnWithPath(pid_t* pid,
+                  const char* file,
+                  const posix_spawn_file_actions_t* actions,
+                  const posix_spawnattr_t* attrs,
+                  char* const argv[],
+                  char* const envp[],
+                  std::string_view search_path) {
+  if (file == nullptr || file[0] == '\0') return ENOENT;
+  if (std::strchr(file, '/') != nullptr) {
+    int spawn_error;
+    do {
+      spawn_error = posix_spawn(pid, file, actions, attrs, argv, envp);
+    } while (spawn_error == EINTR);
+    return spawn_error;
+  }
+
+  bool saw_eacces = false;
+  size_t begin = 0;
+  while (begin <= search_path.size()) {
+    const size_t end = search_path.find(':', begin);
+    const std::string_view directory =
+        search_path.substr(begin, end == std::string_view::npos ? end : end - begin);
+    std::string candidate;
+    if (directory.empty()) {
+      candidate = file;
+    } else {
+      candidate.reserve(directory.size() + 1 + std::strlen(file));
+      candidate.append(directory);
+      candidate.push_back('/');
+      candidate.append(file);
+    }
+
+    int spawn_error;
+    do {
+      spawn_error = posix_spawn(pid, candidate.c_str(), actions, attrs, argv, envp);
+    } while (spawn_error == EINTR);
+    if (spawn_error == 0) return 0;
+    if (spawn_error == EACCES) {
+      saw_eacces = true;
+    } else if (spawn_error != ENOENT && spawn_error != ENOTDIR) {
+      return spawn_error;
+    }
+
+    if (end == std::string_view::npos) break;
+    begin = end + 1;
+  }
+
+  return saw_eacces ? EACCES : ENOENT;
+}
+
+std::vector<char*> BuildArgv(const std::vector<std::string>& command) {
+  std::vector<char*> argv;
+  argv.reserve(command.size() + 1);
+  for (const auto& arg : command) {
+    argv.push_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.push_back(nullptr);
+  return argv;
+}
+
+std::vector<std::string> BuildEnvironment(std::string_view path,
+                                          std::string_view edge_binary_path = {}) {
+  std::vector<std::string> environment;
+  for (char** item = ::environ; item != nullptr && *item != nullptr; ++item) {
+    const std::string_view entry(*item);
+    if (entry.starts_with("PATH=")) continue;
+    if (!edge_binary_path.empty() && entry.starts_with("EDGE_BINARY_PATH=")) continue;
+    environment.emplace_back(entry);
+  }
+  environment.emplace_back("PATH=" + std::string(path));
+  if (!edge_binary_path.empty()) {
+    environment.emplace_back("EDGE_BINARY_PATH=" + std::string(edge_binary_path));
+  }
+  return environment;
+}
+
+std::vector<char*> BuildEnvp(std::vector<std::string>* environment) {
+  std::vector<char*> envp;
+  envp.reserve(environment->size() + 1);
+  for (auto& entry : *environment) envp.push_back(entry.data());
+  envp.push_back(nullptr);
+  return envp;
+}
+
+std::string_view CurrentPath() {
+  const char* path = std::getenv("PATH");
+  return path == nullptr ? "/bin:/usr/bin" : std::string_view(path);
+}
+#endif
 
 std::string ResolveWasmerBinary(std::string_view wasmer_bin) {
   if (!wasmer_bin.empty()) return std::string(wasmer_bin);
@@ -157,6 +251,42 @@ CommandResult RunCommandCapture(const std::vector<std::string>& command) {
     return result;
   }
 
+#if defined(__wasm__)
+  posix_spawn_file_actions_t actions;
+  int spawn_error = posix_spawn_file_actions_init(&actions);
+  const bool actions_initialized = spawn_error == 0;
+  if (spawn_error == 0) {
+    spawn_error = posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO);
+  }
+  if (spawn_error == 0) {
+    spawn_error = posix_spawn_file_actions_adddup2(&actions, stderr_pipe[1], STDERR_FILENO);
+  }
+  if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
+  if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
+  if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addclose(&actions, exec_error_pipe[0]);
+  if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addclose(&actions, exec_error_pipe[1]);
+
+  std::vector<char*> argv = BuildArgv(command);
+  pid_t child_pid = -1;
+  if (spawn_error == 0) {
+    spawn_error = SpawnWithPath(&child_pid,
+                                argv[0],
+                                &actions,
+                                nullptr,
+                                argv.data(),
+                                ::environ,
+                                CurrentPath());
+  }
+  if (actions_initialized) (void)posix_spawn_file_actions_destroy(&actions);
+  if (spawn_error != 0) {
+    for (int fd : stdout_pipe) close(fd);
+    for (int fd : stderr_pipe) close(fd);
+    for (int fd : exec_error_pipe) close(fd);
+    result.exec_errno = spawn_error;
+    result.stderr_output = std::strerror(spawn_error);
+    return result;
+  }
+#else
   const pid_t child_pid = fork();
   if (child_pid < 0) {
     const int fork_errno = errno;
@@ -194,6 +324,7 @@ CommandResult RunCommandCapture(const std::vector<std::string>& command) {
     (void)write(exec_error_pipe[1], &exec_errno, sizeof(exec_errno));
     _exit(127);
   }
+#endif
 
   close(stdout_pipe[1]);
   close(stderr_pipe[1]);
@@ -257,6 +388,43 @@ int RunCommandPassthrough(const std::vector<std::string>& command, std::string* 
     return 1;
   }
 
+#if defined(__wasm__)
+  std::vector<char*> argv = BuildArgv(command);
+  posix_spawn_file_actions_t actions;
+  int spawn_error = posix_spawn_file_actions_init(&actions);
+  const bool actions_initialized = spawn_error == 0;
+  if (spawn_error == 0) {
+    spawn_error = posix_spawn_file_actions_addclose(&actions, exec_error_pipe[0]);
+  }
+  if (spawn_error == 0) {
+    spawn_error = posix_spawn_file_actions_addclose(&actions, exec_error_pipe[1]);
+  }
+  pid_t child_pid = -1;
+  if (spawn_error == 0) {
+    spawn_error = SpawnWithPath(&child_pid,
+                                argv[0],
+                                &actions,
+                                nullptr,
+                                argv.data(),
+                                ::environ,
+                                CurrentPath());
+  }
+  if (actions_initialized) (void)posix_spawn_file_actions_destroy(&actions);
+  if (spawn_error != 0) {
+    close(exec_error_pipe[0]);
+    close(exec_error_pipe[1]);
+    if (error_out != nullptr) {
+      if (spawn_error == ENOENT) {
+        *error_out = "safe mode requires Wasmer. Install it from " +
+                     std::string(kSafeModeInstallUrl) + ".";
+      } else {
+        *error_out = std::strerror(spawn_error);
+      }
+    }
+    return 1;
+  }
+  close(exec_error_pipe[1]);
+#else
   const pid_t child_pid = fork();
   if (child_pid < 0) {
     const int fork_errno = errno;
@@ -285,6 +453,7 @@ int RunCommandPassthrough(const std::vector<std::string>& command, std::string* 
   }
 
   close(exec_error_pipe[1]);
+#endif
 
   int exec_errno = 0;
   const ssize_t exec_errno_size = read(exec_error_pipe[0], &exec_errno, sizeof(exec_errno));
@@ -424,6 +593,45 @@ int EdgeRunCompatCommand(int argc, const char* const* argv, std::string* error_o
   }
   return static_cast<int>(rc);
 #else
+#if defined(__wasm__)
+  std::vector<std::string> environment = BuildEnvironment(compat_path, edge_binary_path);
+  std::vector<char*> child_envp = BuildEnvp(&environment);
+  std::vector<char*> child_argv;
+  child_argv.reserve(static_cast<size_t>(argc));
+  for (int i = 1; i < argc; ++i) {
+    if (argv[i] != nullptr) child_argv.push_back(const_cast<char*>(argv[i]));
+  }
+  child_argv.push_back(nullptr);
+
+  pid_t child_pid = -1;
+  const int spawn_error = SpawnWithPath(&child_pid,
+                                        child_argv[0],
+                                        nullptr,
+                                        nullptr,
+                                        child_argv.data(),
+                                        child_envp.data(),
+                                        compat_path);
+  if (spawn_error != 0) {
+    if (error_out != nullptr) {
+      *error_out = "spawn failed for compat command: " + std::string(child_argv[0]) +
+                   ": " + std::strerror(spawn_error);
+    }
+    return spawn_error == ENOENT ? 127 : 1;
+  }
+
+  int status = 0;
+  while (waitpid(child_pid, &status, 0) < 0) {
+    if (errno == EINTR) continue;
+    if (error_out != nullptr) {
+      *error_out = "waitpid failed for compat command: " + std::string(std::strerror(errno));
+    }
+    return 1;
+  }
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  if (error_out != nullptr) *error_out = "compat command ended unexpectedly";
+  return 1;
+#else
   int error_pipe[2] = {-1, -1};
   if (pipe(error_pipe) != 0) {
     if (error_out != nullptr) {
@@ -508,5 +716,6 @@ int EdgeRunCompatCommand(int argc, const char* const* argv, std::string* error_o
     *error_out = "compat command ended unexpectedly";
   }
   return 1;
+#endif
 #endif
 }

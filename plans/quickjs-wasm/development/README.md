@@ -41,6 +41,7 @@ also has a troubleshooting page, treat the troubleshooting page as canonical.
 | [009_node_test_failures_analysis.md](009_node_test_failures_analysis.md) | ▶️ | Node test failure clustering; per-problem pages live under `troubleshooting/node-test`. |
 | [010_wasix_remaining_node_test_failures.md](010_wasix_remaining_node_test_failures.md) | ▶️ | Fix plan for the 12 in-process WASIX Node test failures after environment exclusions. |
 | [011_tier2_standalone_build_tests.md](011_tier2_standalone_build_tests.md) | 🟢 | Tier 2 standalone build artifact harness, canary apps, and verification. |
+| [012_linux_wasm_kernel_port.md](012_linux_wasm_kernel_port.md) | ▶️ | Embedded QuickJS Edge CLI port to the `wasm32-unknown-linux-musl` kernel target. |
 
 ## Development Task Notes
 

@@ -10,7 +10,7 @@
 #include "unofficial_napi.h"
 
 uint64_t EdgeGetTotalMemory() {
-#if defined(__wasi__) || defined(__wasm32__)
+#if defined(__wasi__)
   // The JS Wasmer runtime currently caps shared WebAssembly memories at 1 GiB.
   // WASIX does not expose host physical-memory discovery, so report that
   // effective process budget instead of zero or an arbitrary stub value.

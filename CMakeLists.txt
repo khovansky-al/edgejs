@@ -95,6 +95,8 @@ elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
   add_subdirectory("${EDGE_QUICKJS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/quickjs" EXCLUDE_FROM_ALL)
   set(NAPI_QUICKJS_INCLUDE_DIR "${EDGE_QUICKJS_ROOT}" CACHE PATH
     "Path to QuickJS headers" FORCE)
+  set(NAPI_QUICKJS_DEFINES "NAPI_EXTENSION_WASMER_EXTERN=" CACHE STRING
+    "Compile definitions for the embedded QuickJS N-API provider" FORCE)
   set(NAPI_QUICKJS_BUILD_TESTS "${EDGE_BUILD_NAPI_TESTS}" CACHE BOOL "" FORCE)
   add_subdirectory("${PROJECT_ROOT}/napi/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/napi-quickjs")
 endif()
@@ -164,7 +166,11 @@ target_link_libraries(edge_environment_core PUBLIC uv_a)
 if(EDGE_NAPI_PROVIDER STREQUAL "bundled-v8")
   target_compile_definitions(edge_environment_core PUBLIC EDGE_BUNDLED_NAPI_V8=1 EDGE_EMBEDDED_NAPI_PROVIDER=1)
 elseif(EDGE_NAPI_PROVIDER STREQUAL "quickjs")
-  target_compile_definitions(edge_environment_core PUBLIC EDGE_EMBEDDED_NAPI_PROVIDER=1 NAPI_EXTERN=)
+  target_compile_definitions(edge_environment_core PUBLIC
+    EDGE_EMBEDDED_NAPI_PROVIDER=1
+    NAPI_EXTERN=
+    NAPI_EXTENSION_WASMER_EXTERN=
+  )
 endif()
 
 edge_configure_icu()

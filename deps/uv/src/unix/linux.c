@@ -43,7 +43,9 @@
 #include <netpacket/packet.h>
 #include <sys/epoll.h>
 #include <sys/inotify.h>
-#include <sys/mman.h>
+#if !defined(__wasm__)
+# include <sys/mman.h>
+#endif
 #include <sys/param.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -499,6 +501,23 @@ static int uv__use_io_uring(uint32_t flags) {
 }
 
 
+#if defined(__wasm__)
+static void uv__iou_init(int epollfd,
+                         struct uv__iou* iou,
+                         uint32_t entries,
+                         uint32_t flags) {
+  (void) epollfd;
+  (void) entries;
+  (void) flags;
+  /* The wasm Linux ABI has no mmap, so libuv uses its epoll/threadpool path. */
+  iou->ringfd = -1;
+}
+
+
+static void uv__iou_delete(struct uv__iou* iou) {
+  iou->ringfd = -1;
+}
+#else
 static void uv__iou_init(int epollfd,
                          struct uv__iou* iou,
                          uint32_t entries,
@@ -635,6 +654,7 @@ static void uv__iou_delete(struct uv__iou* iou) {
     iou->ringfd = -1;
   }
 }
+#endif
 
 
 int uv__platform_loop_init(uv_loop_t* loop) {

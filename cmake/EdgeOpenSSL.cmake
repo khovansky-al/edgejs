@@ -66,8 +66,39 @@ function(edge_require_shared_openssl_target target_name display_name)
   endif()
 endfunction()
 
+function(edge_require_static_openssl_target target_name display_name)
+  set(_static FALSE)
+  foreach(_prop
+      IMPORTED_LOCATION
+      IMPORTED_LOCATION_RELEASE
+      IMPORTED_LOCATION_DEBUG
+      IMPORTED_LOCATION_RELWITHDEBINFO
+      IMPORTED_LOCATION_MINSIZEREL
+      IMPORTED_LOCATION_NOCONFIG)
+    get_target_property(_value "${target_name}" "${_prop}")
+    if(_value AND NOT _value MATCHES "-NOTFOUND$" AND _value MATCHES "\\.a$")
+      set(_static TRUE)
+    endif()
+  endforeach()
+  if(NOT _static)
+    message(FATAL_ERROR
+      "${display_name} resolved to a non-static OpenSSL library. "
+      "Static mode requires static/system OpenSSL libraries.")
+  endif()
+endfunction()
+
 macro(edge_configure_openssl)
-  if(EDGE_IS_WASIX_TARGET)
+  if(EDGE_SHARED_OPENSSL AND EDGE_STATIC_OPENSSL)
+    message(FATAL_ERROR
+      "EDGE_SHARED_OPENSSL and EDGE_STATIC_OPENSSL are mutually exclusive.")
+  endif()
+
+  if(EDGE_STATIC_OPENSSL)
+    set(OPENSSL_USE_STATIC_LIBS TRUE CACHE BOOL "" FORCE)
+    find_package(OpenSSL REQUIRED)
+    edge_require_static_openssl_target(OpenSSL::Crypto "OpenSSL::Crypto")
+    edge_require_static_openssl_target(OpenSSL::SSL "OpenSSL::SSL")
+  elseif(EDGE_IS_WASIX_TARGET)
     set(EDGE_OPENSSL_WASIX_ROOT
       "${PROJECT_ROOT}/deps/openssl-wasix"
       CACHE PATH "Path to wasix-org OpenSSL source/build tree"

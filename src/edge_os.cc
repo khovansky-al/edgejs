@@ -20,7 +20,7 @@
 
 #include "uv.h"
 
-#if defined(__wasi__) || defined(__wasm32__)
+#if defined(__wasi__)
 #define DUMMY_UV_STUBS 1
 #endif
 
