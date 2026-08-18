@@ -111,8 +111,11 @@ struct WasmState {
     DeleteRefIfPresent(env, &global_ctor_ref);
     if (store != nullptr)
       wasm_store_delete(store);
-    if (engine != nullptr)
-      wasm_engine_delete(engine);
+    // The WAMR engine owns a process-global runtime allocator. JavaScript
+    // wrappers can be finalized after this state is destroyed, so deleting
+    // the engine here would make their wasm_*_delete calls reach a dead
+    // allocator. Keep the singleton alive until process exit; the wrappers
+    // then release their copied WAMR objects normally.
   }
 
   bool Initialize(std::string *error_out) {
