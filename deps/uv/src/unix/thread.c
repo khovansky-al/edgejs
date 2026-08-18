@@ -135,6 +135,27 @@ int uv_thread_detach(uv_thread_t *tid) {
 }
 
 
+#if defined(__wasm__)
+/* A WebAssembly function pointer is an index into a typed table, and an
+ * indirect call traps unless the call site's signature matches the callee's
+ * exactly. The union below squelches a warning on architectures where calling
+ * a void-returning function through a void*-returning pointer happens to
+ * work; here it is a guaranteed trap, so wasm gets a real trampoline. */
+struct uv__wasm_thread_arg {
+  void (*entry)(void* arg);
+  void* arg;
+};
+
+
+static void* uv__wasm_thread_entry(void* arg) {
+  struct uv__wasm_thread_arg self = *(struct uv__wasm_thread_arg*) arg;
+  uv__free(arg);
+  self.entry(self.arg);
+  return NULL;
+}
+#endif
+
+
 int uv_thread_create_ex(uv_thread_t* tid,
                         const uv_thread_options_t* params,
                         void (*entry)(void *arg),
@@ -146,11 +167,13 @@ int uv_thread_create_ex(uv_thread_t* tid,
   size_t stack_size;
   size_t min_stack_size;
 
+#if !defined(__wasm__)
   /* Used to squelch a -Wcast-function-type warning. */
   union {
     void (*in)(void*);
     void* (*out)(void*);
   } f;
+#endif
 
   stack_size =
       params->flags & UV_THREAD_HAS_STACK_SIZE ? params->stack_size : 0;
@@ -177,8 +200,27 @@ int uv_thread_create_ex(uv_thread_t* tid,
       abort();
   }
 
+#if defined(__wasm__)
+  {
+    struct uv__wasm_thread_arg* ctx = uv__malloc(sizeof(*ctx));
+
+    if (ctx == NULL) {
+      if (attr != NULL)
+        pthread_attr_destroy(attr);
+      return UV_ENOMEM;
+    }
+
+    ctx->entry = entry;
+    ctx->arg = arg;
+    err = pthread_create(tid, attr, uv__wasm_thread_entry, ctx);
+
+    if (err)
+      uv__free(ctx);
+  }
+#else
   f.in = entry;
   err = pthread_create(tid, attr, f.out, arg);
+#endif
 
   if (attr != NULL)
     pthread_attr_destroy(attr);

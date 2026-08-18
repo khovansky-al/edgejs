@@ -137,6 +137,45 @@ std::string GetGlibcCompilerVersion() {
 #endif
 }
 
+// N-API addons compiled into this executable, keyed by the file name that
+// `require` will ask for.
+std::mutex g_linked_addons_mutex;
+std::vector<std::pair<std::string, napi_addon_register_func>> g_linked_addons;
+
+}  // namespace
+
+// Linked addons: N-API modules compiled into the interpreter rather than
+// loaded from a shared object. A platform without dynamic linking -- the
+// wasm32 Linux target is static-only, and wasm has no dlopen -- cannot open a
+// .node file at all, so the addon's code is linked in and registers itself
+// here under the filename that `require` will ask for.
+//
+// Registration happens from a constructor in the linking object, so the table
+// is complete before any JavaScript runs.
+extern "C" void edge_register_linked_addon(const char* name, napi_addon_register_func init) {
+  if (name == nullptr || init == nullptr) return;
+  std::lock_guard<std::mutex> lock(g_linked_addons_mutex);
+  g_linked_addons.emplace_back(name, init);
+}
+
+namespace {
+
+// Addons are requested by absolute path, but linked under the base name the
+// package installs, so compare on the trailing path component.
+bool LinkedAddonMatches(const std::string& registered, const std::string& requested) {
+  if (registered == requested) return true;
+  const size_t slash = requested.find_last_of('/');
+  return slash != std::string::npos && requested.compare(slash + 1, std::string::npos, registered) == 0;
+}
+
+napi_addon_register_func FindLinkedAddon(const std::string& filename) {
+  std::lock_guard<std::mutex> lock(g_linked_addons_mutex);
+  for (const auto& addon : g_linked_addons) {
+    if (LinkedAddonMatches(addon.first, filename)) return addon.second;
+  }
+  return nullptr;
+}
+
 napi_addon_register_func GetNapiInitializerCallback(uv_lib_t* lib) {
   if (lib == nullptr) return nullptr;
   void* symbol = nullptr;
@@ -4405,7 +4444,12 @@ napi_value ProcessMethodsDlopenCallback(napi_env env, napi_callback_info info) {
     }
   }
 
-  if (lib == nullptr) {
+  // A linked addon needs no library handle at all, so it short-circuits the
+  // dynamic load. This is the only path that works where the platform has no
+  // dlopen.
+  init = FindLinkedAddon(filename);
+
+  if (init == nullptr && lib == nullptr) {
     newly_loaded = std::make_unique<uv_lib_t>();
     std::string message;
     if (OpenDynamicLibrary(filename, flags, newly_loaded.get(), &message) != 0) {
@@ -4416,7 +4460,7 @@ napi_value ProcessMethodsDlopenCallback(napi_env env, napi_callback_info info) {
     cache_loaded_library = true;
   }
 
-  init = GetNapiInitializerCallback(lib);
+  if (init == nullptr) init = GetNapiInitializerCallback(lib);
 
   if (init == nullptr) {
     const std::string message = "Module did not self-register: '" + filename + "'.";
@@ -4982,6 +5026,58 @@ std::string EdgeGetProcessExecPath() {
   return g_edge_exec_path;
 }
 
+namespace {
+
+// A linked addon is reachable only through NAPI_RS_NATIVE_LIBRARY_PATH.
+// napi-rs's generated loaders consult that variable before any platform
+// detection, and detection cannot succeed here: there is no .node file to find
+// and no dlopen to call, because the addon's code is already in this
+// executable. Defaulting the variable to the placeholder the package installs
+// means an addon works from an interactive shell without the caller having to
+// know any of that. An explicit value always wins, and the default reaches
+// child processes through environ like any other variable.
+//
+// The override is global to napi-rs rather than scoped to one addon, so every
+// napi-rs loader in the process resolves to this addon's placeholder. That is
+// acceptable only because no npm-installed native addon can load on this
+// platform in the first place: without this variable such a require fails on
+// platform detection instead, which is a clearer error but equally fatal.
+void ApplyLinkedAddonLibraryPathDefault() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    const char* existing = std::getenv("NAPI_RS_NATIVE_LIBRARY_PATH");
+    if (existing != nullptr && *existing != '\0') return;
+
+    std::string name;
+    {
+      std::lock_guard<std::mutex> lock(g_linked_addons_mutex);
+      // One linked addon is the supported case; with several there is no single
+      // correct answer, so leave the variable alone rather than guess.
+      if (g_linked_addons.size() != 1) return;
+      name = g_linked_addons.front().first;
+    }
+    if (name.empty()) return;
+
+    const std::string exec_path = EdgeGetProcessExecPath();
+    if (exec_path.empty()) return;
+
+    namespace fs = std::filesystem;
+    // bin/node to ../lib/edge-addons/<name>: the layout the package installs,
+    // so this resolves whether the interpreter runs from / in a guest root
+    // filesystem or from a prefix.
+    const fs::path placeholder =
+        fs::path(exec_path).lexically_normal().parent_path().parent_path() / "lib" /
+        "edge-addons" / name;
+    std::error_code ec;
+    if (!fs::exists(placeholder, ec) || ec) return;
+
+    // Do not overwrite: an empty-but-present value is still the caller's.
+    ::setenv("NAPI_RS_NATIVE_LIBRARY_PATH", placeholder.string().c_str(), 0);
+  });
+}
+
+}  // namespace
+
 napi_status EdgeInstallProcessObject(napi_env env,
                                       const std::string& current_script_path,
                                       const std::vector<std::string>& exec_argv,
@@ -4990,6 +5086,7 @@ napi_status EdgeInstallProcessObject(napi_env env,
   if (env == nullptr) return napi_invalid_arg;
   if (g_edge_exec_path.empty()) g_edge_exec_path = DetectExecPath();
   if (g_edge_argv0.empty()) g_edge_argv0 = g_edge_exec_path;
+  ApplyLinkedAddonLibraryPathDefault();
   napi_value global = nullptr;
   napi_status status = napi_get_global(env, &global);
   if (status != napi_ok || global == nullptr) return (status == napi_ok) ? napi_generic_failure : status;
