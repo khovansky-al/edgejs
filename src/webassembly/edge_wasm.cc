@@ -109,8 +109,21 @@ struct WasmState {
     DeleteRefIfPresent(env, &memory_ctor_ref);
     DeleteRefIfPresent(env, &table_ctor_ref);
     DeleteRefIfPresent(env, &global_ctor_ref);
-    if (store != nullptr)
+    if (store != nullptr) {
       wasm_store_delete(store);
+      store = nullptr;
+    }
+    // WAMR's instance keeps raw pointers to imported C-API callbacks instead
+    // of retaining them. Keep each owning extern vector alive through store
+    // teardown so an exported function remains safe after its JS Instance
+    // wrapper has been collected.
+    for (wasm_extern_vec_t *imports : retained_imports) {
+      if (imports == nullptr)
+        continue;
+      wasm_extern_vec_delete(imports);
+      delete imports;
+    }
+    retained_imports.clear();
     // The WAMR engine owns a process-global runtime allocator. JavaScript
     // wrappers can be finalized after this state is destroyed, so deleting
     // the engine here would make their wasm_*_delete calls reach a dead
@@ -156,6 +169,7 @@ struct WasmState {
   // Live memory objects whose cached buffers must be revalidated at JS↔wasm
   // boundaries (wasm-internal memory.grow has no JS-side hook).
   std::vector<WasmMemoryObject *> live_memories;
+  std::vector<wasm_extern_vec_t *> retained_imports;
 };
 
 struct ImportFuncData {
@@ -998,11 +1012,12 @@ napi_value CreateFunctionObject(WasmState *state, const std::string &name,
           env, name.empty() ? nullptr : name.c_str(),
           name.empty() ? 0 : name.size(),
           [](napi_env env, napi_callback_info info) -> napi_value {
-            size_t argc = 32;
-            napi_value argv[32] = {};
-            napi_value this_arg = nullptr;
+            // Read the callback binding first, then size argv from the Wasm
+            // signature. Emscripten exports functions with more than 32
+            // parameters, and JavaScript permits omitted trailing arguments.
+            size_t argc = 0;
             void *raw = nullptr;
-            if (!GetCallback(env, info, &argc, argv, &this_arg, &raw))
+            if (!GetCallback(env, info, &argc, nullptr, nullptr, &raw))
               return nullptr;
             auto *function = static_cast<WasmFunctionObject *>(raw);
             if (function == nullptr || function->func == nullptr) {
@@ -1023,11 +1038,14 @@ napi_value CreateFunctionObject(WasmState *state, const std::string &name,
             size_t param_count = params == nullptr ? 0 : params->size;
             size_t result_count =
                 result_types == nullptr ? 0 : result_types->size;
-            if (argc < param_count) {
-              wasm_functype_delete(type);
-              napi_throw_type_error(
-                  env, nullptr, "Too few arguments for WebAssembly function");
-              return nullptr;
+            std::vector<napi_value> argv(param_count);
+            if (param_count > 0) {
+              size_t argument_capacity = param_count;
+              if (!GetCallback(env, info, &argument_capacity, argv.data(),
+                               nullptr, nullptr)) {
+                wasm_functype_delete(type);
+                return nullptr;
+              }
             }
 
             wasm_val_vec_t wasm_args;
@@ -1227,10 +1245,8 @@ napi_value ModuleConstructor(napi_env env, napi_callback_info info) {
 
 bool BuildImportExtern(WasmState *state, napi_value import_object,
                        const wasm_importtype_t *import_type,
-                       std::vector<wasm_func_t *> *owned_funcs,
                        wasm_extern_t **out) {
-  if (state == nullptr || import_type == nullptr || owned_funcs == nullptr ||
-      out == nullptr)
+  if (state == nullptr || import_type == nullptr || out == nullptr)
     return false;
   *out = nullptr;
   napi_env env = state->env;
@@ -1264,8 +1280,9 @@ bool BuildImportExtern(WasmState *state, napi_value import_object,
             Unwrap<WasmFunctionObject>(env, value, WasmObjectKind::kFunction);
         wrapped != nullptr) {
       wasm_func_t *func = wasm_func_copy(wrapped->func);
-      owned_funcs->push_back(func);
       *out = wasm_func_as_extern(func);
+      if (*out == nullptr)
+        wasm_func_delete(func);
       return *out != nullptr;
     }
 
@@ -1312,8 +1329,9 @@ bool BuildImportExtern(WasmState *state, napi_value import_object,
                      "Failed to create WebAssembly import function");
       return false;
     }
-    owned_funcs->push_back(func);
     *out = wasm_func_as_extern(func);
+    if (*out == nullptr)
+      wasm_func_delete(func);
     return *out != nullptr;
   }
   case WASM_EXTERN_GLOBAL: {
@@ -1325,7 +1343,7 @@ bool BuildImportExtern(WasmState *state, napi_value import_object,
                          module_name + "." + import_name);
       return false;
     }
-    *out = wasm_global_as_extern(global->global);
+    *out = wasm_global_as_extern(wasm_global_copy(global->global));
     return *out != nullptr;
   }
   case WASM_EXTERN_TABLE: {
@@ -1336,7 +1354,7 @@ bool BuildImportExtern(WasmState *state, napi_value import_object,
                          module_name + "." + import_name);
       return false;
     }
-    *out = wasm_table_as_extern(table->table);
+    *out = wasm_table_as_extern(wasm_table_copy(table->table));
     return *out != nullptr;
   }
   case WASM_EXTERN_MEMORY: {
@@ -1348,7 +1366,7 @@ bool BuildImportExtern(WasmState *state, napi_value import_object,
                          module_name + "." + import_name);
       return false;
     }
-    *out = wasm_memory_as_extern(memory->memory);
+    *out = wasm_memory_as_extern(wasm_memory_copy(memory->memory));
     return *out != nullptr;
   }
   default:
@@ -1393,49 +1411,72 @@ napi_value InstanceConstructor(napi_env env, napi_callback_info info) {
   wasm_importtype_vec_t import_types;
   wasm_module_imports(module->module, &import_types);
   std::vector<wasm_extern_t *> import_externs(import_types.size);
-  std::vector<wasm_func_t *> owned_import_funcs;
   bool ok = true;
   for (size_t i = 0; i < import_types.size; ++i) {
     if (!BuildImportExtern(state, argc >= 2 ? argv[1] : nullptr,
-                           import_types.data[i], &owned_import_funcs,
-                           &import_externs[i])) {
+                           import_types.data[i], &import_externs[i])) {
       ok = false;
       break;
     }
   }
   if (!ok) {
-    for (wasm_func_t *func : owned_import_funcs)
-      wasm_func_delete(func);
+    for (wasm_extern_t *ext : import_externs)
+      wasm_extern_delete(ext);
     wasm_importtype_vec_delete(&import_types);
     return nullptr;
   }
 
-  wasm_extern_vec_t imports;
-  imports.size = import_externs.size();
-  imports.data = import_externs.empty() ? nullptr : import_externs.data();
+  // Construct this through the provider's vector API. WAMR extends the
+  // standard size/data pair with bookkeeping used by wasm_instance_new; a
+  // hand-built vector therefore looks empty and leaves every JS import
+  // unlinked.
+  auto *imports = new wasm_extern_vec_t{};
+  wasm_extern_vec_new(imports, import_externs.size(), import_externs.data());
+  if (!import_externs.empty() &&
+      (imports->data == nullptr || imports->size != import_externs.size())) {
+    for (wasm_extern_t *ext : import_externs)
+      wasm_extern_delete(ext);
+    wasm_extern_vec_delete(imports);
+    delete imports;
+    wasm_importtype_vec_delete(&import_types);
+    napi_throw_error(env, nullptr,
+                     "Failed to allocate WebAssembly import vector");
+    return nullptr;
+  }
   wasm_trap_t *trap = nullptr;
   wasm_instance_t *instance =
-      wasm_instance_new(state->store, module->module, &imports, &trap);
-  for (wasm_func_t *func : owned_import_funcs)
-    wasm_func_delete(func);
+      wasm_instance_new(state->store, module->module, imports, &trap);
   wasm_importtype_vec_delete(&import_types);
 
   if (trap != nullptr) {
     napi_value pending_exception = nullptr;
     if (TakePendingImportException(state, &pending_exception)) {
       wasm_trap_delete(trap);
+      wasm_extern_vec_delete(imports);
+      delete imports;
       napi_throw(env, pending_exception);
       return nullptr;
     }
     std::string message = TrapMessage(trap);
     wasm_trap_delete(trap);
+    wasm_extern_vec_delete(imports);
+    delete imports;
     ThrowWasmError(env, "RuntimeError", message);
     return nullptr;
   }
   if (instance == nullptr) {
+    wasm_extern_vec_delete(imports);
+    delete imports;
     ThrowWasmError(env, "LinkError",
                    "WebAssembly.Instance instantiation failed");
     return nullptr;
+  }
+
+  if (import_externs.empty()) {
+    wasm_extern_vec_delete(imports);
+    delete imports;
+  } else {
+    state->retained_imports.push_back(imports);
   }
 
   wasm_extern_vec_t exports;
@@ -1944,7 +1985,9 @@ napi_value GlobalConstructor(napi_env env, napi_callback_info info) {
       wasm_globaltype_new(content, is_mutable ? WASM_VAR : WASM_CONST);
   wasm_global_t *global = wasm_global_new(state->store, type, &initial_value);
   wasm_globaltype_delete(type);
-  wasm_val_delete(&initial_value);
+  // `initial_value` is caller-owned stack storage. In particular, WAMR's
+  // wasm_val_delete frees the wasm_val_t allocation itself, so it must only be
+  // used with an allocation returned by the C API, never with this value.
   if (global == nullptr) {
     napi_throw_error(env, nullptr, "Failed to create WebAssembly.Global");
     return nullptr;
@@ -1976,7 +2019,8 @@ napi_value GlobalValueGetter(napi_env env, napi_callback_info info) {
   wasm_val_t value;
   wasm_global_get(object->global, &value);
   napi_value out = WasmValToJs(object->base.state, env, &value);
-  wasm_val_delete(&value);
+  // wasm_global_get writes into the caller's stack storage; it does not return
+  // a wasm_val_t allocation for us to delete.
   return out;
 }
 
@@ -2010,7 +2054,7 @@ napi_value GlobalValueSetter(napi_env env, napi_callback_info info) {
     return nullptr;
   }
   wasm_global_set(object->global, &value);
-  wasm_val_delete(&value);
+  // `value` is stack storage filled by JsToWasmVal, not an owned wasm_val_t.
   return Undefined(env);
 }
 

@@ -2575,6 +2575,9 @@ static napi_value OptionsGetCLIOptionsInfoCallback(napi_env env, napi_callback_i
       "--node-snapshot",
       "--no-node-snapshot",
       "--loader",
+      // Workers validate explicit execArgv through this set even when the
+      // source-tree CLI documentation is not installed beside the runtime.
+      "--unhandled-rejections",
       "--verify-base-objects",
       "--no-verify-base-objects",
       "--trace-promises",

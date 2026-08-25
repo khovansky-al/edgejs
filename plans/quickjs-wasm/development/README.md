@@ -41,7 +41,7 @@ also has a troubleshooting page, treat the troubleshooting page as canonical.
 | [009_node_test_failures_analysis.md](009_node_test_failures_analysis.md) | ▶️ | Node test failure clustering; per-problem pages live under `troubleshooting/node-test`. |
 | [010_wasix_remaining_node_test_failures.md](010_wasix_remaining_node_test_failures.md) | ▶️ | Fix plan for the 12 in-process WASIX Node test failures after environment exclusions. |
 | [011_tier2_standalone_build_tests.md](011_tier2_standalone_build_tests.md) | 🟢 | Tier 2 standalone build artifact harness, canary apps, and verification. |
-| [012_linux_wasm_kernel_port.md](012_linux_wasm_kernel_port.md) | ▶️ | Embedded QuickJS Edge CLI port to the `wasm32-unknown-linux-musl` kernel target. |
+| [012_linux_wasm_kernel_port.md](012_linux_wasm_kernel_port.md) | 🟢 | Embedded QuickJS Edge CLI port to the `wasm32-unknown-linux-musl` kernel target; current runtime details live in the workspace handoff. |
 
 ## Development Task Notes
 
@@ -56,7 +56,7 @@ canonical home for known incompatibilities once a troubleshooting page exists.
 | [dev_004_v8_napi_lifetime_refactor](dev_004_v8_napi_lifetime_refactor/) | 🟢 | V8 N-API lifetime, handle-scope, reference, wrap, and finalizer refactor implemented and verified against shared V8/QuickJS N-API suites. |
 | [dev_005_build_registry_modularization](dev_005_build_registry_modularization/) | 🟠 | Build modularization and internal binding registry implementation with provider-specific verification still pending. |
 | [dev_006_pnpm_bundle_command](dev_006_pnpm_bundle_command/) | 🟠 | Bundled pnpm 10 command works under QuickJS WASIX with scoped filesystem adaptations; pnpm 11 and external command delegation remain follow-ups. |
-| [dev_007_host_js_imported_napi](dev_007_host_js_imported_napi/) | 🟠 | Engine-free `syrusakbary/edgejs` package contract and artifact validation for a host-JavaScript N-API backend; host integration remains active. |
+| [dev_007_host_js_imported_napi](dev_007_host_js_imported_napi/) | 🟠 | Archived `syrusakbary/edgejs` host-JavaScript N-API candidate; not the current Linux/wasm checkout. |
 
 ## Status Icons
 

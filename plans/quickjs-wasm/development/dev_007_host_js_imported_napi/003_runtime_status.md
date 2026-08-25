@@ -1,4 +1,13 @@
-# Runtime Status
+# Runtime Status (archived)
+
+> This note records a separate published WASIX/host-import-N-API candidate and
+> is not the current status of the Linux/wasm checkout. For the current
+> `linux-wasm` branch, dirty files, port patch discipline, and verified checks,
+> read [`../../../../../AGENTS.md`](../../../../../AGENTS.md).
+
+The contents below are retained as historical evidence for that candidate; do
+not use its package version, paths, or Wasmer commands as the current
+Linux/wasm handoff.
 
 ## Candidate artifact
 

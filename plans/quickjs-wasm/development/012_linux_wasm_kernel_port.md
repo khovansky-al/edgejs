@@ -1,4 +1,11 @@
-# Edge QuickJS Linux-on-WebAssembly port
+# Edge QuickJS Linux-on-WebAssembly port (archived milestone)
+
+> This note records the initial Linux/wasm port milestone. The current source
+> checkout is `/mnt/shared_drive/linux-wasm/edgejs`, and the current WAMR,
+> linked-addon, Worker-option, and verification state is maintained in
+> [`edgejs/AGENTS.md`](../../../../AGENTS.md) and the root `AGENTS.md`.
+> In particular, the current build enables WAMR-backed WebAssembly; the old
+> initial-gap wording below is historical.
 
 | | | Remarks |
 | --- | --- | --- |
@@ -25,7 +32,7 @@ not WASI or WASIX, and it must not import Wasmer's WASIX interfaces.
 - QuickJS submodule: `9d5513a65693e4fc16f48975df59f6fa62f6a9b0`
 - Linux target triple: `wasm32-unknown-linux-musl`
 
-The Edge checkout is persistent at `/home/alex/linux-wasm/edgejs`; the distro
+The Edge checkout is persistent at `/mnt/shared_drive/linux-wasm/edgejs`; the distro
 package reconstructs the same source tree from commit-pinned archives until a
 project fork becomes the canonical source.
 
